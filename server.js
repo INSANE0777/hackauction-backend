@@ -7,12 +7,40 @@ const jwt = require('jsonwebtoken');
 
 const sql = neon(process.env.DATABASE_URL);
 const saltRounds = 10;
+const JWT_SECRET = process.env.JWT_SECRET;
+
+// Proper middleware placement
+function verifyToken(req, res, next) {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+  
+  if (!token) {
+    res.writeHead(401, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({ error: "Unauthorized" }));
+  }
+
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) {
+      res.writeHead(403, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ error: "Invalid token" }));
+    }
+    req.user = user;
+    next();
+  });
+}
 
 async function parseJSONBody(req) {
   return new Promise((resolve) => {
     let body = [];
     req.on("data", (chunk) => body.push(chunk));
-    req.on("end", () => resolve(JSON.parse(Buffer.concat(body).toString())));
+    req.on("end", () => {
+      if (body.length === 0) return resolve({});
+      try {
+        return resolve(JSON.parse(Buffer.concat(body).toString()));
+      } catch (e) {
+        return resolve({});
+      }
+    });
   });
 }
 
@@ -20,7 +48,7 @@ const requestHandler = async (req, res) => {
   try {
     // Set CORS headers at the top level
     res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
     if (req.method === "OPTIONS") {
@@ -29,10 +57,28 @@ const requestHandler = async (req, res) => {
       return;
     }
 
-    // Move verifyToken middleware outside of login handler
+    // Default route handler
+    if (req.url === "/" || req.url === "") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ 
+        message: "Welcome to HACKAUCTION API", 
+        version: "1.0.0",
+        endpoints: {
+          signup: "/api/signup",
+          login: "/api/login",
+          protected: "/api/protected/*"
+        }
+      }));
+    }
+
+    // Protected routes
     if (req.url.startsWith("/api/protected")) {
       return verifyToken(req, res, () => {
-        // Handle protected routes here
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ 
+          message: "Protected route accessed successfully",
+          user: req.user
+        }));
       });
     }
 
@@ -55,9 +101,13 @@ const requestHandler = async (req, res) => {
       res.writeHead(201, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ message: "User created successfully" }));
     }
-    // In login handler (remove duplicate declaration)
     else if (req.url === "/api/login" && req.method === "POST") {
       const { email, password } = await parseJSONBody(req);
+      
+      if (!email || !password) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({ error: "Missing required fields" }));
+      }
       
       const [user] = await sql`
         SELECT * FROM users WHERE email = ${email}
@@ -67,41 +117,18 @@ const requestHandler = async (req, res) => {
         res.writeHead(401, { "Content-Type": "application/json" });
         return res.end(JSON.stringify({ error: "Invalid credentials" }));
       }
-    
-      // Remove this line: const JWT_SECRET = process.env.JWT_SECRET || 'your_secure_secret_here';
       
       const token = jwt.sign(
         { userId: user.id, email: user.email },
         JWT_SECRET,
         { expiresIn: '1h' }
       );
+      
+      res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ 
         message: "Login successful",
         token: token 
       }));
-      
-      // Add middleware to verify JWT
-      // Move JWT_SECRET to top level
-      const JWT_SECRET = process.env.JWT_SECRET;
-      
-      // Proper middleware placement
-      function verifyToken(req, res, next) {
-        const authHeader = req.headers['authorization'];
-        const token = authHeader && authHeader.split(' ')[1];
-        
-        if (!token) {
-          return res.writeHead(401).end(JSON.stringify({ error: "Unauthorized" }));
-        }
-      
-        jwt.verify(token, JWT_SECRET, (err, user) => {
-          if (err) return res.writeHead(403).end(JSON.stringify({ error: "Invalid token" }));
-          req.user = user;
-          next();
-        });
-      }
-      
-      // Update CORS headers to allow Authorization
-      res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
     }
     else {
       res.writeHead(404, { "Content-Type": "application/json" });
@@ -110,7 +137,7 @@ const requestHandler = async (req, res) => {
   } catch (error) {
     console.error(error);
     res.writeHead(500, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: "Internal server error" }));
+    res.end(JSON.stringify({ error: "Internal server error", details: error.message }));
   }
 };
 
@@ -135,6 +162,10 @@ async function initializeDatabase() {
 
 // Modify server startup
 http.createServer(requestHandler).listen(process.env.PORT || 3000, async () => {
-  await initializeDatabase();
-  console.log(`Server running on port ${process.env.PORT || 3000}`);
+  try {
+    await initializeDatabase();
+    console.log(`Server running on port ${process.env.PORT || 3000}`);
+  } catch (error) {
+    console.error("Database initialization failed:", error);
+  }
 });
