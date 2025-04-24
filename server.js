@@ -125,7 +125,7 @@ async function initializeDatabase() {
 }
 
 // Modify server startup
-http.createServer(requestHandler).listen(3000, async () => {
+http.createServer(requestHandler).listen(process.env.PORT || 3000, async () => {
   await initializeDatabase();
-  console.log("Server running at http://localhost:3000");
+  console.log(`Server running on port ${process.env.PORT || 3000}`);
 });
