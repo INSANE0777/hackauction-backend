@@ -18,15 +18,22 @@ async function parseJSONBody(req) {
 
 const requestHandler = async (req, res) => {
   try {
-    // Set CORS headers
+    // Set CORS headers at the top level
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
     if (req.method === "OPTIONS") {
       res.writeHead(204);
       res.end();
       return;
+    }
+
+    // Move verifyToken middleware outside of login handler
+    if (req.url.startsWith("/api/protected")) {
+      return verifyToken(req, res, () => {
+        // Handle protected routes here
+      });
     }
 
     if (req.url === "/api/signup" && req.method === "POST") {
@@ -48,23 +55,21 @@ const requestHandler = async (req, res) => {
       res.writeHead(201, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ message: "User created successfully" }));
     }
+    // In login handler (remove duplicate declaration)
     else if (req.url === "/api/login" && req.method === "POST") {
       const { email, password } = await parseJSONBody(req);
       
       const [user] = await sql`
         SELECT * FROM users WHERE email = ${email}
       `;
-
+    
       if (!user || !(await bcrypt.compare(password, user.password_hash))) {
         res.writeHead(401, { "Content-Type": "application/json" });
         return res.end(JSON.stringify({ error: "Invalid credentials" }));
       }
-
-      res.writeHead(200, { "Content-Type": "application/json" });
+    
+      // Remove this line: const JWT_SECRET = process.env.JWT_SECRET || 'your_secure_secret_here';
       
-      const JWT_SECRET = process.env.JWT_SECRET || 'your_secure_secret_here';
-      
-      // Add this in login handler after successful authentication
       const token = jwt.sign(
         { userId: user.id, email: user.email },
         JWT_SECRET,
@@ -76,6 +81,10 @@ const requestHandler = async (req, res) => {
       }));
       
       // Add middleware to verify JWT
+      // Move JWT_SECRET to top level
+      const JWT_SECRET = process.env.JWT_SECRET;
+      
+      // Proper middleware placement
       function verifyToken(req, res, next) {
         const authHeader = req.headers['authorization'];
         const token = authHeader && authHeader.split(' ')[1];
